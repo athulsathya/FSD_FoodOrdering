@@ -1,8 +1,8 @@
-
 import { User } from "../model/userModel.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { verifyEmail } from "../emailVerify/verifyEmail.js";
+import { Session } from "../model/sessionModel.js";
 
 // Registering User
 export const register = async (req, res) => {
@@ -48,7 +48,7 @@ export const register = async (req, res) => {
       process.env.SECRET_KEY,
       {
         expiresIn: "10m",
-      }
+      },
     );
 
     // Save token in database
@@ -69,7 +69,6 @@ export const register = async (req, res) => {
         isVerified: newUser.isVerified,
       },
     });
-
   } catch (error) {
     console.error("Register error:", error);
 
@@ -150,7 +149,6 @@ export const verify = async (req, res) => {
       success: true,
       message: "Email verified successfully",
     });
-
   } catch (error) {
     console.error("Verify error:", error);
 
@@ -174,3 +172,173 @@ export const verify = async (req, res) => {
     });
   }
 };
+
+// reVerifying
+export const reVerify = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required",
+      });
+    }
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User Not Found",
+      });
+    }
+
+    //  Check if already verified
+    if (user.isVerified) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is already verified",
+      });
+    }
+
+    //  Generate verification token
+    const token = jwt.sign(
+      {
+        id: user._id,
+        purpose: "email-verification",
+      },
+      process.env.SECRET_KEY,
+      {
+        expiresIn: "10m",
+      },
+    );
+
+    // Save new token in database
+    user.token = token;
+    await user.save();
+
+    //  Send verification email
+    await verifyEmail(token, user.email);
+
+    // Success response
+    return res.status(200).json({
+      success: true,
+      message: "Verification email sent successfully",
+    });
+  } catch (error) {
+    console.error("ReVerify Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to resend verification email",
+    });
+  }
+};
+
+// login
+export const login = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "All Fields are required",
+      });
+    }
+    const existingUser = await User.findOne({ email });
+    if (!existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: "User is not exist on this email",
+      });
+    }
+
+    // checking both passwords are same
+    const passwordIsValid = await bcrypt.compare(
+      password,
+      existingUser.password,
+    );
+    if (!passwordIsValid) {
+      return res.status(400).json({
+        success: false,
+        message: "Password is not matching",
+      });
+    }
+    if (existingUser.isVerified === false) {
+      return res.status(400).json({
+        success: false,
+        message: "Account is not verified. Verify and Login",
+      });
+    }
+
+    // generate token
+    const accessToken = jwt.sign(
+      { id: existingUser._id },
+      process.env.SECRET_KEY,
+      { expiresIn: "10d" },
+    );
+    const refreshToken = jwt.sign(
+      { id: existingUser._id },
+      process.env.SECRET_KEY,
+      { expiresIn: "30d" },
+    );
+    existingUser.isLoggedIn = true;
+    await existingUser.save();
+
+    //check for existing session and delete it.
+    const existingSession = await Session.findOne({
+      userId: existingUser._id,
+    });
+    if (existingSession) {
+      await Session.deleteOne({ userId: existingUser._id });
+    }
+
+    //Create a new session
+    await Session.create({ userId: existingUser._id });
+    return res.status(200).json({
+      success: true,
+      message: `Welcome back ${existingUser.firstName}`,
+      user: existingUser,
+      accessToken,
+      refreshToken,
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+};
+
+//user Logout
+// exports.logout = async (req, res) => {
+//   try {
+//     const userId = req.id;
+
+//     if (!userId) {
+//       return res.status(401).json({
+//         success: false,
+//         message: "Unauthorized",
+//       });
+//     }
+
+//     await Session.deleteMany({ userId });
+
+//     await User.findByIdAndUpdate(userId, {
+//       isLoggedIn: false,
+//     });
+
+//     return res.status(200).json({
+//       success: true,
+//       message: "User logged out successfully",
+//     });
+//   } catch (err) {
+//     console.error(err);
+
+//     return res.status(500).json({
+//       success: false,
+//       message: "Internal Server Error",
+//     });
+//   }
+// };
